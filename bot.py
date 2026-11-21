@@ -33,9 +33,11 @@ P_GRAB = _os.environ.get("P_GRAB", "1") == "1"  # pick up nearby cubes in the mi
 P_GRAB_R = float(_os.environ.get("P_GRAB_R", "45"))  # how far (m) we detour for a cube mid-fight
 P_CUBEW = float(_os.environ.get("P_CUBEW", "1"))  # weight of cubes / drones / crates when looting
 P_CUBEW_C = float(_os.environ.get("P_CUBEW_C", "2"))  # extra weight on loose cubes only when looting
-P_ENGAGE = float(_os.environ.get("P_ENGAGE", "120"))  # ignore enemies farther than this unless they shot us recently
+P_ENGAGE = float(_os.environ.get("P_ENGAGE", "90"))  # ignore enemies farther than this unless they shot us recently
 P_NPCAVOID = _os.environ.get("P_NPCAVOID", "1") == "1"  # while healing, keep away from drones (they shoot within 45 m)
 P_HOLD = _os.environ.get("P_HOLD", "0") == "1"  # nothing to do: stand still (silent) instead of walking laps
+P_EXPLORE = _os.environ.get("P_EXPLORE", "0") == "1"  # nothing to do: visit unexplored parts of the circle (find loot)
+P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a supply drop
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -118,6 +120,9 @@ class Bot:
         self.hostile = {}  # enemy id -> last time it damaged us
         self._rays = None
         self.cur_target = None
+        self.visited = set()  # 40 m cells we have walked through
+        self._explore_key = None
+        self._explore_cells = []
 
     # ------------------------------------------------------------------ helpers
     def zone_now(self, z, t):
@@ -158,6 +163,7 @@ class Bot:
         muz = (pos[0], pos[1], pos[2] + muz_h)
         act = {"tick": obs["tick"]}
         self.update_memory(obs)
+        self.visited.add((int(math.floor(pos[0] / 40.0)), int(math.floor(pos[1] / 40.0))))
 
         # --- upgrade offers
         if obs.get("offer"):
@@ -543,6 +549,11 @@ class Bot:
         self.mode = "roam"
         target = sc
         d = math.hypot(target[0] - pos[0], target[1] - pos[1])
+        if P_EXPLORE:
+            goal = self.explore_goal(pos, sc, sr)
+            if goal is not None:
+                self.mode = "explore"
+                return norm2(goal[0] - pos[0], goal[1] - pos[1]), False, None, None
         if P_HOLD and d < sr * 0.6:
             # safely inside the circle with nothing to do: stay put and quiet, let them come to us
             self.mode = "hold"
@@ -552,6 +563,36 @@ class Bot:
             target = (sc[0] + math.cos(ang) * sr * 0.3, sc[1] + math.sin(ang) * sr * 0.3)
         want = norm2(target[0] - pos[0], target[1] - pos[1])
         return want, False, None, None
+
+    def explore_goal(self, pos, sc, sr):
+        """Center of the nearest unvisited 40 m cell inside the safe circle, on open ground."""
+        w = self.world
+        r = max(0.0, sr - 20.0)
+        if r < 20:
+            return None
+        key = (round(sc[0]), round(sc[1]), round(r))
+        if self._explore_key != key:  # the open cells only change when the circle does
+            self._explore_key = key
+            cells = []
+            i0, i1 = int(math.floor((sc[0] - r) / 40.0)), int(math.floor((sc[0] + r) / 40.0))
+            j0, j1 = int(math.floor((sc[1] - r) / 40.0)), int(math.floor((sc[1] + r) / 40.0))
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    cx, cy = i * 40.0 + 20.0, j * 40.0 + 20.0
+                    if math.hypot(cx - sc[0], cy - sc[1]) > r or not w.in_bounds(cx, cy, 15):
+                        continue
+                    if w.height(cx, cy) - w.ground(cx, cy) > 2.0:
+                        continue  # inside a building: skip
+                    cells.append((i, j, cx, cy))
+            self._explore_cells = cells
+        best = None
+        for i, j, cx, cy in self._explore_cells:
+            if (i, j) in self.visited:
+                continue
+            d = (cx - pos[0]) ** 2 + (cy - pos[1]) ** 2
+            if best is None or d < best[0]:
+                best = (d, (cx, cy))
+        return best[1] if best else None
 
     # ------------------------------------------------------------------ combat movement
     def desired_range(self, weapons, energy):
@@ -691,7 +732,7 @@ class Bot:
             zc, zr = obs["zone"]["center"], obs["zone"]["radius"]
             if not (self.in_circle(p, sc, sr, 2) or self.in_circle(p, zc, zr, 6)):
                 continue
-            if d > 140 or dr["lands_in"] > d / 11.0 + 4:
+            if d > P_DROP_R or dr["lands_in"] > d / 11.0 + 4:
                 continue
             # who else is in or near the ring?
             rivals = [m for m in enemies if math.hypot(m["pos"][0] - p[0], m["pos"][1] - p[1]) < r + 4]
