@@ -201,17 +201,31 @@ class Bot:
             self.mode = "loot"
             want, boost, aim_actor, aim_kind = self.loot_move(obs, npcs, hp_frac, sc, sr)
 
-        # --- zone pressure overrides everything
+        # --- supply drop: go take it, and once inside the ring stay there until it's ours
+        dmove = self.drop_plan(obs, enemies, hp_frac, sc, sr)
+        if dmove is not None:
+            want, boost = dmove
+            self.mode += "+drop"
+
+        # --- zone pressure overrides everything (margins shrink with the circle, so a tiny
+        # final circle doesn't make us boost back and forth across the center)
         dz = math.hypot(pos[0] - zc[0], pos[1] - zc[1])
-        if dz > zr - 4 or not self.in_circle(pos, sc, sr, 6) and t > obs["zone"]["shrink_start"] - 12:
+        zmargin = min(4.0, zr * 0.3)
+        smargin = min(6.0, sr * 0.3)
+        dsc = math.hypot(pos[0] - sc[0], pos[1] - sc[1])
+        if dz > zr - zmargin or not self.in_circle(pos, sc, sr, smargin) and t > obs["zone"]["shrink_start"] - 12:
             vx, vy = norm2(sc[0] - pos[0], sc[1] - pos[1])
-            if dz > zr - 4:
+            if dz > zr - zmargin:
                 want = (vx, vy)
-                boost = me["energy"] > 15
+                boost = me["energy"] > 15 and dz > zr + 2
                 self.mode += "+zone!"
             else:
                 want = norm2(want[0] * 0.4 + vx, want[1] * 0.4 + vy)
                 self.mode += "+zone"
+        if sr < 8 and dsc < 1.5 and dz <= zr + 1.5:
+            # final circle and we're at its center: stand still, save energy, make no noise
+            want, boost = (0.0, 0.0), False
+            self.mode += "+hold"
 
         # --- dodge mortar shells
         dodge = self.dodge_shells(obs)
@@ -243,7 +257,10 @@ class Bot:
         if g is not None:
             gw = weapons[g]
             if gw.get("reload", 0) == 0 and gw.get("ammo", 1) < gw["stats"]["mag"]:
-                if gw.get("ammo", 1) == 0 or (target is None and gw.get("ammo", 1) < gw["stats"]["mag"] * 0.6):
+                ammo = gw.get("ammo", 1)
+                mag = gw["stats"]["mag"]
+                # empty, or a quiet moment: nothing in sight, or hiding behind cover
+                if ammo == 0 or (target is None and ammo < mag * 0.6) or (hold_fire and ammo < mag * 0.75):
                     act["reload"] = True
 
         el = (time.perf_counter() - t0) * 1000
@@ -557,6 +574,65 @@ class Bot:
             want = norm2(want[0] - want[1] * 0.5 * self.strafe_sign, want[1] + want[0] * 0.5 * self.strafe_sign)
         return want, me["energy"] > 20, False
 
+    def drop_plan(self, obs, enemies, hp_frac, sc, sr):
+        """Movement for a supply drop worth taking now, or None.
+
+        A capture needs us alone in the ring for capture_s; it pays 3 cubes plus full HP and energy,
+        so once we're inside we stay (fighting from the ring) unless it's hopeless."""
+        me = obs["self"]
+        pos = me["pos"]
+        t = obs["t"]
+        my_id = me["id"]
+        best = None
+        for dr in obs.get("drops") or []:
+            p = dr["pos"]
+            r = dr.get("radius", 8.0)
+            d = math.hypot(p[0] - pos[0], p[1] - pos[1])
+            inside = d < r - 1.0
+            zc, zr = obs["zone"]["center"], obs["zone"]["radius"]
+            if not (self.in_circle(p, sc, sr, 2) or self.in_circle(p, zc, zr, 6)):
+                continue
+            if d > 140 or dr["lands_in"] > d / 11.0 + 4:
+                continue
+            # who else is in or near the ring?
+            rivals = [m for m in enemies if math.hypot(m["pos"][0] - p[0], m["pos"][1] - p[1]) < r + 4]
+            hostile_los = sum(1 for m in enemies if m["_los"] and m["_d"] < 120)
+            holder = dr.get("holder")
+            mine = holder == my_id
+            if inside:
+                # stay unless swarmed while hurt, or we're about to die before it completes
+                left = dr.get("capture_s", 4.0) - (dr.get("progress", 0.0) if mine else 0.0)
+                if hp_frac < 0.15 and left > 1.5:
+                    continue
+                if hostile_los >= 3 and hp_frac < 0.5 and not mine:
+                    continue
+            else:
+                if self.retreating or hp_frac < 0.3:
+                    continue
+                if hostile_los >= 2:
+                    continue
+                if rivals and hp_frac < 0.6:
+                    continue
+                if holder is not None and not mine and dr.get("progress", 0) > 2.5 and d > 40:
+                    continue  # someone nearly has it and we're far
+            score = d - (60 if inside else 0) - (30 if mine else 0)
+            if best is None or score < best[0]:
+                best = (score, p, r, d, inside)
+        if best is None:
+            return None
+        _, p, r, d, inside = best
+        ux, uy = norm2(p[0] - pos[0], p[1] - pos[1])
+        if not inside:
+            return (ux, uy), d > 30 and me["energy"] > 45
+        # inside: small strafe that keeps us well within the ring (harder to hit, never leaves)
+        self.update_strafe(t)
+        pull = max(0.0, (d - (r - 3.0)) / 2.0)
+        wx = -uy * self.strafe_sign * 0.45 + ux * pull
+        wy = ux * self.strafe_sign * 0.45 + uy * pull
+        if d < 1.0:
+            wx, wy = -uy * self.strafe_sign * 0.45, ux * self.strafe_sign * 0.45
+        return (wx, wy), False
+
     def dodge_shells(self, obs):
         me = obs["self"]
         pos = me["pos"]
@@ -664,7 +740,8 @@ class Bot:
             self.unstick_dir = (math.cos(a), math.sin(a))
             self.unstick_until = t + 0.9
             return self.unstick_dir, True, energy > 10
-        return (dx, dy), jump, boost
+        mag = min(1.0, wl)  # keep a deliberately slow move slow (e.g. holding a capture ring)
+        return (dx * mag, dy * mag), jump, boost
 
     # ------------------------------------------------------------------ aiming / firing
     def lead_point(self, src, tpos, tvel, cz, speed, extra=0.05):
