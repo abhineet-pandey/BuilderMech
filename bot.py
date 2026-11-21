@@ -88,7 +88,8 @@ class Bot:
     def __init__(self, hello):
         cfg = hello["config"]
         self.cfg = cfg
-        self.rng = random.Random(hello.get("seed", 0))
+        # P_SEED salts the RNG: same strategy, different (deterministic) dice on the fixed practice seeds
+        self.rng = random.Random((hello.get("seed", 0) or 0) ^ (int(_os.environ.get("P_SEED", "0")) * 0x9E3779B1))
         self.world = World(hello["map"]["dir"])
         self.mech_cfg = cfg["mech"]
         self.grav = cfg["mech"]["gravity"]
