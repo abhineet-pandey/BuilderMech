@@ -41,7 +41,9 @@ P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a 
 P_CUBECAP = int(_os.environ.get("P_CUBECAP", "999"))  # stop chasing cubes at this many (past stat_cap they only make us bigger)
 P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"
 P_HEALHIDE = float(_os.environ.get("P_HEALHIDE", "0"))  # nothing on us and HP below this: hide from known enemies and regen
-P_AIMHOST = _os.environ.get("P_AIMHOST", "0") == "1"  # leave alone mechs that aren't aiming at / shooting / near us
+P_AIMHOST = _os.environ.get("P_AIMHOST", "0") == "1"
+P_HURTSKIP = float(_os.environ.get("P_HURTSKIP", "0"))  # below this HP, don't start fights with mechs that aren't shooting us
+P_HEALSTILL = _os.environ.get("P_HEALSTILL", "0") == "1"  # hurt with no known enemy around: stand still and quiet  # leave alone mechs that aren't aiming at / shooting / near us
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
 P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
@@ -254,6 +256,7 @@ class Bot:
 
         hp_frac = me["hp"] / max(1.0, me["max_hp"])
         self._pos = pos
+        self._hpf = hp_frac
         target = self.pick_target(enemies, t, weapons)
 
         # --- weapon management: take good pickups in reach
@@ -322,6 +325,10 @@ class Bot:
                     boost = False  # boosting delays energy regen and makes noise
                     aim_actor = aim_kind = None
                     self.mode = "healhide"
+                elif P_HEALSTILL and not cube_near:
+                    want, boost = (0.0, 0.0), False
+                    aim_actor = aim_kind = None
+                    self.mode = "healstill"
             if P_NPCAVOID and hp_frac < P_FARM_HP and aim_kind != "npc":
                 # drones fire at any mech within 45 m; getting hit resets the 5 s regen timer
                 rx = ry = 0.0
@@ -486,6 +493,8 @@ class Bot:
             if d > 260:
                 continue
             frac = (m.get("hp") or 1400) / max(1.0, m.get("max_hp") or 1400)
+            if P_HURTSKIP and self._hpf < P_HURTSKIP and t - self.hostile.get(m["id"], -99) > 6 and d > 35 and frac >= 0.35:
+                continue  # hurt: let regen run instead of picking a new fight
             if P_AIMHOST and not self.ffa and t - self.hostile.get(m["id"], -99) > 12 and d > 45 and frac >= 0.35:
                 # a house bot that isn't hunting us looks elsewhere; starting a fight with it adds an attacker
                 to_me = math.atan2(self._pos[1] - m["pos"][1], self._pos[0] - m["pos"][0])
