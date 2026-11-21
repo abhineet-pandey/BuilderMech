@@ -48,6 +48,8 @@ P_TRACK = _os.environ.get("P_TRACK", "0") == "1"  # per-enemy motion history: st
 P_PREAIM = _os.environ.get("P_PREAIM", "0") == "1"  # pre-aim where a lost enemy should reappear (at body height)
 P_PRECHARGE = _os.environ.get("P_PRECHARGE", "0") == "1"  # charge the laser before a lost hostile reappears (instant first hit)
 P_HH_MEM = float(_os.environ.get("P_HH_MEM", "15"))  # hide-to-heal: hide from enemies seen within this many seconds
+P_JINK = float(_os.environ.get("P_JINK", "0"))  # per-decision chance to hop while a hostile with a clear shot is on us
+P_CUBEAVOID = _os.environ.get("P_CUBEAVOID", "0") == "1"  # at the cube cap, step around cubes instead of over them
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
 P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
@@ -84,6 +86,12 @@ UPGRADE_HEAL = [
 UPGRADE_FFA = [
     "plating", "armor", "nanites", "laser_damage", "gun_damage", "gun_rate", "laser_charge", "gyros",
     "lightning_efficiency", "gun_mag", "gun_velocity", "lightning_range", "lightning_chain", "capacitor",
+    "reactor", "servos", "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity", "laser_pierce",
+]
+
+UPGRADE_GYRO = [
+    "armor", "gyros", "plating", "laser_damage", "gun_damage", "nanites", "gun_rate", "laser_charge",
+    "lightning_efficiency", "lightning_range", "lightning_chain", "gun_mag", "gun_velocity", "capacitor",
     "reactor", "servos", "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity", "laser_pierce",
 ]
 
@@ -386,8 +394,24 @@ class Bot:
                 boost = boost or me["energy"] > 30
                 self.mode += "+ldodge"
 
+        if P_CUBEAVOID and me["cubes"] >= P_CUBECAP and (abs(want[0]) + abs(want[1])) > 0.05:
+            # past the cap a cube only makes us bigger (easier to hit): don't walk over it
+            rx = ry = 0.0
+            for c in obs["cubes"]:
+                cx, cy = c["pos"][0] - pos[0], c["pos"][1] - pos[1]
+                dc = math.hypot(cx, cy)
+                if 0.1 < dc < 6.5 and abs(c["pos"][2] - pos[2]) < 4.5:
+                    k = (6.5 - dc) / 6.5 * 2.0
+                    rx -= cx / dc * k
+                    ry -= cy / dc * k
+            if rx or ry:
+                want = norm2(want[0] + rx, want[1] + ry)
+                self.mode += "+cubeavoid"
+
         # --- steering (walls, jets, stuck)
         move, jump, boost = self.steer(obs, want, boost)
+        if P_JINK and not jump and me.get("grounded") and self.mode.startswith("fight")                 and any(m["_los"] and m["_hostile"] for m in enemies) and self.rng.random() < P_JINK:
+            jump = True  # shooters lead sideways motion, rarely a sudden hop
         act["move"] = [round(move[0], 4), round(move[1], 4)]
         act["boost"] = bool(boost)
         act["jump"] = bool(jump)
@@ -556,7 +580,7 @@ class Bot:
 
     def pick_upgrade(self, offer):
         ids = [c["id"] for c in offer["choices"]]
-        for u in (UPGRADE_FFA if self.ffa and P_FFA_UPG == "hp" else UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
+        for u in (UPGRADE_FFA if (self.ffa and P_FFA_UPG == "hp") or P_UPG == "hp" else UPGRADE_GYRO if P_UPG == "gyro" else UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
             if u in ids:
                 return ids.index(u)
         return 0
