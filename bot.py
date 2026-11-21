@@ -40,6 +40,8 @@ P_EXPLORE = _os.environ.get("P_EXPLORE", "0") == "1"  # nothing to do: visit une
 P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a supply drop
 P_CUBECAP = int(_os.environ.get("P_CUBECAP", "999"))  # stop chasing cubes at this many (past stat_cap they only make us bigger)
 P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"
+P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
+P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
 # didn't kill means a real free-for-all: there, survival pays and nobody is hunting us specifically.
 P_FFA = _os.environ.get("P_FFA", "auto")  # auto (detect) | 0 (never) | 1 (always)
@@ -212,6 +214,7 @@ class Bot:
             m["_seen"] = bool(a or b)
 
         hp_frac = me["hp"] / max(1.0, me["max_hp"])
+        self._pos = pos
         target = self.pick_target(enemies, t, weapons)
 
         # --- weapon management: take good pickups in reach
@@ -310,6 +313,13 @@ class Bot:
         if dodge is not None:
             want = norm2(want[0] * 0.3 + dodge[0], want[1] * 0.3 + dodge[1])
             boost = me["energy"] > 25
+
+        if P_LDODGE:
+            ld = self.dodge_lasers(obs, enemies)
+            if ld is not None:
+                want = norm2(want[0] * 0.25 + ld[0], want[1] * 0.25 + ld[1])
+                boost = boost or me["energy"] > 30
+                self.mode += "+ldodge"
 
         # --- steering (walls, jets, stuck)
         move, jump, boost = self.steer(obs, want, boost)
@@ -441,6 +451,15 @@ class Bot:
                 cr = lightning.get("chain_range", 14)
                 near = sum(1 for o in enemies if o is not m and math.dist(o["pos"], m["pos"]) < cr)
                 s -= 0.8 * min(near, int(lightning.get("chain", 2)))
+            if P_FACE:
+                # facing m puts anyone behind us on our rear armor (x1.5): count attackers more than 90 deg off
+                bm = math.atan2(m["pos"][1] - self._pos[1], m["pos"][0] - self._pos[0])
+                for o in enemies:
+                    if o is m or t - self.hostile.get(o["id"], -99) > 4 or o["_d"] > 150:
+                        continue
+                    bo = math.atan2(o["pos"][1] - self._pos[1], o["pos"][0] - self._pos[0])
+                    if abs(wrap(bo - bm)) > math.pi / 2:
+                        s += P_FACE
             if s < best_s:
                 best_s, best = s, m
         self.cur_target = best["id"] if best is not None else None
@@ -838,6 +857,36 @@ class Bot:
                 if out == (0.0, 0.0):
                     out = (1.0, 0.0)
         return out
+
+    def dodge_lasers(self, obs, enemies):
+        """A visible enemy charging a laser with its aim on us: step sideways off the line."""
+        pos = obs["self"]["pos"]
+        best = None
+        for m in enemies:
+            if not m.get("charging") or not m["_los"] or "laser" not in (m.get("weapons") or []):
+                continue
+            d = m["_d"]
+            if d > 280:
+                continue
+            to_me = math.atan2(pos[1] - m["pos"][1], pos[0] - m["pos"][0])
+            err = abs(wrap((m.get("aim") or [0, 0])[0] - to_me))
+            if err * max(d, 1.0) > 6.0:  # its beam would miss us by more than ~2 radii
+                continue
+            if best is None or d < best[0]:
+                best = (d, to_me)
+        if best is None:
+            return None
+        ux, uy = math.cos(best[1]), math.sin(best[1])
+        if self.obs_t_dodge_flip(obs["t"]):
+            self.strafe_sign = -self.strafe_sign
+        return (-uy * self.strafe_sign, ux * self.strafe_sign)
+
+    def obs_t_dodge_flip(self, t):
+        # keep one side for ~0.8 s so we actually get off the line, then maybe switch
+        if t >= getattr(self, "_ldodge_until", -1):
+            self._ldodge_until = t + 0.8
+            return self.rng.random() < 0.5
+        return False
 
     # ------------------------------------------------------------------ steering
     def path_clear(self, pos, dx, dy, look):
