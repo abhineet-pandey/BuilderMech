@@ -38,6 +38,8 @@ P_NPCAVOID = _os.environ.get("P_NPCAVOID", "1") == "1"  # while healing, keep aw
 P_HOLD = _os.environ.get("P_HOLD", "0") == "1"  # nothing to do: stand still (silent) instead of walking laps
 P_EXPLORE = _os.environ.get("P_EXPLORE", "0") == "1"  # nothing to do: visit unexplored parts of the circle (find loot)
 P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a supply drop
+P_CUBECAP = int(_os.environ.get("P_CUBECAP", "999"))  # stop chasing cubes at this many (past stat_cap they only make us bigger)
+P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"  # 0: no boosting in a fight while holding lightning (save energy for arcs)
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -469,7 +471,7 @@ class Bot:
         held = {w["kind"]: i for i, w in enumerate(weapons) if w}
         margin = 10.0
         cands = []  # (score, point, kind, actor)
-        for cid, (p, ts) in self.cubes.items():
+        for cid, (p, ts) in (self.cubes.items() if me["cubes"] < P_CUBECAP else ()):
             if self.in_circle(p, sc, sr, margin):
                 d = math.dist(p, pos)
                 cands.append((12.0 * P_CUBEW * P_CUBEW_C / (d + 15), p, "cube", None))
@@ -639,7 +641,7 @@ class Bot:
             wx += cx * k
             wy += cy * k
         want = norm2(wx, wy)
-        if P_GRAB:
+        if P_GRAB and me["cubes"] < P_CUBECAP:
             # a cube within reach is worth a detour: +HP (heals the difference), +damage, upgrade progress
             best_c = None
             for cid, (cp, ts) in self.cubes.items():
@@ -650,6 +652,8 @@ class Bot:
                 gx, gy = norm2(best_c[1][0] - pos[0], best_c[1][1] - pos[1])
                 want = norm2(want[0] * 0.35 + gx, want[1] * 0.35 + gy)
         boost = d > rng + 40 and me["energy"] > 60 or (P_FINISH and tfrac < 0.3 and d > rng + 15 and me["energy"] > 30)
+        if not P_LBOOST and any(w and w["kind"] == "lightning" for w in weapons) and d < 70:
+            boost = False
         return want, boost
 
     def retreat_move(self, obs, threats, sc, sr):
