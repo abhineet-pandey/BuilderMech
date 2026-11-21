@@ -40,6 +40,8 @@ P_EXPLORE = _os.environ.get("P_EXPLORE", "0") == "1"  # nothing to do: visit une
 P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a supply drop
 P_CUBECAP = int(_os.environ.get("P_CUBECAP", "999"))  # stop chasing cubes at this many (past stat_cap they only make us bigger)
 P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"
+P_HEALHIDE = float(_os.environ.get("P_HEALHIDE", "0"))  # nothing on us and HP below this: hide from known enemies and regen
+P_AIMHOST = _os.environ.get("P_AIMHOST", "0") == "1"  # leave alone mechs that aren't aiming at / shooting / near us
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
 P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
@@ -174,6 +176,43 @@ class Bot:
 
     # ------------------------------------------------------------------ main
     def act(self, obs):
+        try:
+            return self._act(obs)
+        except Exception as ex:  # never leave the mech coasting on a stale action
+            self._errs = getattr(self, "_errs", 0) + 1
+            if self._errs <= 3:
+                import traceback
+                log(f"act failed ({ex!r}), using fallback: " + traceback.format_exc())
+            return self.fallback(obs)
+
+    def fallback(self, obs):
+        """Minimal safe behaviour: head for the zone, shoot the nearest visible mech with the gun."""
+        act = {"tick": obs["tick"]}
+        try:
+            me = obs["self"]
+            pos = me["pos"]
+            z = obs["zone"]
+            c = z.get("next_center") or z["center"]
+            vx, vy = norm2(c[0] - pos[0], c[1] - pos[1])
+            act["move"] = [vx, vy] if math.hypot(c[0] - pos[0], c[1] - pos[1]) > 10 else [0.0, 0.0]
+            foes = [m for m in obs.get("mechs") or [] if m.get("kind") == "mech"]
+            fire = [False, False]
+            if foes:
+                f = min(foes, key=lambda m: math.dist(pos, m["pos"]))
+                dx, dy = f["pos"][0] - pos[0], f["pos"][1] - pos[1]
+                dz = f["pos"][2] + 4.5 - (pos[2] + 7.0)
+                act["aim"] = [math.atan2(dy, dx), max(-0.7, min(1.3, math.atan2(dz, math.hypot(dx, dy))))]
+                for i, w in enumerate(me.get("weapons") or []):
+                    if w and w.get("kind") == "gun" and i < 2:
+                        fire[i] = math.hypot(dx, dy) < 150
+            act["fire"] = fire
+            if obs.get("offer"):
+                act["pick"] = 0
+        except Exception:
+            pass
+        return act
+
+    def _act(self, obs):
         t0 = time.perf_counter()
         me = obs["self"]
         t = obs["t"]
@@ -269,6 +308,20 @@ class Bot:
         else:
             self.mode = "loot"
             want, boost, aim_actor, aim_kind = self.loot_move(obs, npcs, hp_frac, sc, sr)
+            if P_HEALHIDE and hp_frac < P_HEALHIDE and t - self.last_attacker_t > 2.0:
+                # regen needs 5 s untouched; house bots only know where we are while one of them sees us
+                known = []
+                for eid, e in self.enemies.items():
+                    if t - e["t"] < 15:
+                        d_e = math.dist(pos, e["pos"])
+                        if d_e < 220:
+                            known.append({"pos": e["pos"], "_d": d_e})
+                cube_near = any(math.hypot(c[0][0] - pos[0], c[0][1] - pos[1]) < 12 for c in self.cubes.values())
+                if known and not cube_near:
+                    want, boost, _hid = self.retreat_move(obs, known, sc, sr)
+                    boost = False  # boosting delays energy regen and makes noise
+                    aim_actor = aim_kind = None
+                    self.mode = "healhide"
             if P_NPCAVOID and hp_frac < P_FARM_HP and aim_kind != "npc":
                 # drones fire at any mech within 45 m; getting hit resets the 5 s regen timer
                 rx = ry = 0.0
@@ -433,6 +486,11 @@ class Bot:
             if d > 260:
                 continue
             frac = (m.get("hp") or 1400) / max(1.0, m.get("max_hp") or 1400)
+            if P_AIMHOST and not self.ffa and t - self.hostile.get(m["id"], -99) > 12 and d > 45 and frac >= 0.35:
+                # a house bot that isn't hunting us looks elsewhere; starting a fight with it adds an attacker
+                to_me = math.atan2(self._pos[1] - m["pos"][1], self._pos[0] - m["pos"][0])
+                if abs(wrap((m.get("aim") or [0, 0])[0] - to_me)) > 0.3 and m["id"] != self.cur_target:
+                    continue
             if self.ffa:
                 if t - self.hostile.get(m["id"], -99) > 8 and d > P_FFA_ENG and not (frac < P_FFA_WEAK and d < 100 and m["_los"]):
                     continue  # FFA: let the others fight; only the ones on us, close, or nearly dead
