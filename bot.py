@@ -11,13 +11,15 @@ from world import World
 
 TAU = 2 * math.pi
 import os as _os
-P_RET = float(_os.environ.get("P_RET", "0.4"))
-P_RET_OUT = float(_os.environ.get("P_RET_OUT", "0.92"))
+P_RET = float(_os.environ.get("P_RET", "0.2"))
+P_RET_OUT = float(_os.environ.get("P_RET_OUT", "0.8"))
 P_AVOID = _os.environ.get("P_AVOID", "0") == "1"
-P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0.7"))
+P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0.5"))
 P_LASER_R = float(_os.environ.get("P_LASER_R", "150"))
 P_GUN_R = float(_os.environ.get("P_GUN_R", "55"))
 P_LIGHT = _os.environ.get("P_LIGHT", "1") == "1"
+P_MAXLOS = int(_os.environ.get("P_MAXLOS", "3"))  # this many hostiles with a clear shot forces a retreat
+P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -173,7 +175,7 @@ class Bot:
         # retreat with hysteresis: pull out when hurt or outnumbered, come back only when healed
         tgt_frac = ((target.get("hp") or 1400) / max(1.0, target.get("max_hp") or 1400)) if target else 1.0
         enter = (hp_frac < P_RET and not (tgt_frac < 0.2 and target and target["_d"] < 60)) \
-            or (n_host_los >= 2 and hp_frac < P_OUTNUM) or n_host_los >= 3
+            or (n_host_los >= 2 and hp_frac < P_OUTNUM) or n_host_los >= P_MAXLOS
         if threats_near and enter:
             self.retreating = True
         if self.retreating and (hp_frac > P_RET_OUT or not threats_near and hp_frac > 0.75):
@@ -427,6 +429,25 @@ class Bot:
             travel = d / 11.0
             if dr["lands_in"] < travel + 8 and d < 260 and hp_frac > 0.25 and self.in_circle(p, sc, sr, 0):
                 cands.append((25.0 / (d + 30) * (1.6 - hp_frac), p, "drop", dr))
+        if P_SEEK and hp_frac > 0.7 and has_weapon:
+            # hunt: the nearest enemy we saw recently, else recent gunfire we heard
+            best_e = None
+            for eid, e in self.enemies.items():
+                age = t - e["t"]
+                if age < 15 and self.in_circle(e["pos"], sc, sr, margin):
+                    d = math.dist(e["pos"], pos)
+                    if best_e is None or d < best_e[0]:
+                        best_e = (d, e["pos"])
+            if best_e is not None:
+                cands.append((6.0 / (best_e[0] + 40), best_e[1], "hunt", None))
+            else:
+                for snd in obs["sounds"]:
+                    if snd["kind"] in ("gun", "laser", "lightning", "mortar") and snd["dist"] != "far":
+                        r = 45.0 if snd["dist"] == "near" else 110.0
+                        p = (pos[0] + math.cos(snd["bearing"]) * r, pos[1] + math.sin(snd["bearing"]) * r, pos[2])
+                        if self.in_circle(p, sc, sr, margin):
+                            cands.append((4.0 / (r + 40), p, "hunt", None))
+                            break
         aim_actor = None
         aim_kind = None
         if cands:
