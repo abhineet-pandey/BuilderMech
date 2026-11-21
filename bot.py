@@ -28,8 +28,10 @@ P_PRED_T = float(_os.environ.get("P_PRED_T", "1"))  # how many sim ticks ahead t
 P_LPRED = _os.environ.get("P_LPRED", "0") == "1"  # laser: release on the predicted aim too
 P_LOAD = _os.environ.get("P_LOAD", "def")  # loadout: def (lightning+laser) | gunlight (gun+lightning) | gunlaser
 P_UPG = _os.environ.get("P_UPG", "def")  # upgrade order: def (armor first) | off (gun damage first)
-P_FARM_HP = float(_os.environ.get("P_FARM_HP", "0.45"))  # only shoot crates/drones above this HP (lets regen run)
-P_GRAB = _os.environ.get("P_GRAB", "0") == "1"  # pick up nearby cubes in the middle of a fight
+P_FARM_HP = float(_os.environ.get("P_FARM_HP", "0.9"))  # only shoot crates/drones above this HP (lets regen run)
+P_GRAB = _os.environ.get("P_GRAB", "1") == "1"  # pick up nearby cubes in the middle of a fight
+P_GRAB_R = float(_os.environ.get("P_GRAB_R", "25"))  # how far (m) we detour for a cube mid-fight
+P_CUBEW = float(_os.environ.get("P_CUBEW", "1"))  # weight of cubes / drones / crates when looting
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -438,7 +440,7 @@ class Bot:
         for cid, (p, ts) in self.cubes.items():
             if self.in_circle(p, sc, sr, margin):
                 d = math.dist(p, pos)
-                cands.append((12.0 / (d + 15), p, "cube", None))
+                cands.append((12.0 * P_CUBEW / (d + 15), p, "cube", None))
         for pid, (kind, p, ts) in self.pickups.items():
             gain, _ = self.pickup_gain(kind, weapons, held)
             if gain <= 0 or t - self.bad_take.get(pid, -99) < 3:
@@ -452,11 +454,11 @@ class Bot:
                 p = n["pos"]
                 if self.in_circle(p, sc, sr, margin):
                     d = math.dist(p, pos)
-                    cands.append((7.0 / (d + 30), p, "npc", n))
+                    cands.append((7.0 * P_CUBEW / (d + 30), p, "npc", n))
             for kid, (p, hp, ts) in self.crates.items():
                 if self.in_circle(p, sc, sr, margin):
                     d = math.dist(p, pos)
-                    cands.append((5.0 / (d + 25), p, "crate", {"pos": p, "id": kid, "hp": hp}))
+                    cands.append((5.0 * P_CUBEW / (d + 25), p, "crate", {"pos": p, "id": kid, "hp": hp}))
         for dr in obs.get("drops") or []:
             p = dr["pos"]
             d = math.hypot(p[0] - pos[0], p[1] - pos[1])
@@ -571,7 +573,7 @@ class Bot:
             best_c = None
             for cid, (cp, ts) in self.cubes.items():
                 dc_ = math.hypot(cp[0] - pos[0], cp[1] - pos[1])
-                if dc_ < 25 and abs(cp[2] - pos[2]) < 4 and (best_c is None or dc_ < best_c[0]):
+                if dc_ < P_GRAB_R and abs(cp[2] - pos[2]) < 4 and (best_c is None or dc_ < best_c[0]):
                     best_c = (dc_, cp)
             if best_c is not None:
                 gx, gy = norm2(best_c[1][0] - pos[0], best_c[1][1] - pos[1])
