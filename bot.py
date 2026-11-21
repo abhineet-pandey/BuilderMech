@@ -44,6 +44,8 @@ P_HEALHIDE = float(_os.environ.get("P_HEALHIDE", "0"))  # nothing on us and HP b
 P_AIMHOST = _os.environ.get("P_AIMHOST", "0") == "1"
 P_HURTSKIP = float(_os.environ.get("P_HURTSKIP", "0"))  # below this HP, don't start fights with mechs that aren't shooting us
 P_HEALSTILL = _os.environ.get("P_HEALSTILL", "0") == "1"  # hurt with no known enemy around: stand still and quiet  # leave alone mechs that aren't aiming at / shooting / near us
+P_TRACK = _os.environ.get("P_TRACK", "0") == "1"  # per-enemy motion history: strafe-aware gun lead + extrapolated pre-aim
+P_PREAIM = _os.environ.get("P_PREAIM", "0") == "1"  # pre-aim where a lost enemy should reappear (at body height)
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
 P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
@@ -151,6 +153,7 @@ class Bot:
         self.n_mechs = cfg.get("match", {}).get("mechs", 16)
         self.kills = 0
         self.ffa = P_FFA == "1"
+        self.tracks = {}  # enemy id -> list of (t, x, y, vx, vy), last few seconds
 
     # ------------------------------------------------------------------ helpers
     def zone_now(self, z, t):
@@ -424,6 +427,12 @@ class Bot:
             if m["kind"] == "mech":
                 self.enemies[m["id"]] = {"pos": m["pos"], "vel": m["vel"], "t": t, "hp": m.get("hp"),
                                          "weapons": m.get("weapons", []), "cubes": m.get("cubes", 0)}
+                if P_TRACK:
+                    tr = self.tracks.setdefault(m["id"], [])
+                    if not tr or t - tr[-1][0] > 0.04:
+                        tr.append((t, m["pos"][0], m["pos"][1], m["vel"][0], m["vel"][1]))
+                    while tr and t - tr[0][0] > 5.0:
+                        tr.pop(0)
         for e in obs["events"]:
             ty = e["type"]
             if ty == "damaged" and e.get("by") is not None:
@@ -1056,6 +1065,48 @@ class Bot:
             fz = max(fz, self.world.height(fx, fy) + (cz - tpos[2]))
         return (fx, fy, fz)
 
+    def predict_vel(self, eid, mypos, vel, tf, t):
+        """Effective (average) velocity of enemy `eid` over the next `tf` s.
+
+        Like a player reading a strafer: split its motion into toward/away from us (kept linear) and sideways.
+        If it has been jinking left/right with a steady rhythm, expect the next reversal on schedule; if the
+        reversal is overdue, aim at the middle of its strafe instead of committing to one side."""
+        tr = self.tracks.get(eid)
+        if not tr or len(tr) < 6 or t - tr[-1][0] > 0.3:
+            return vel
+        x, y = tr[-1][1], tr[-1][2]
+        rx, ry = norm2(x - mypos[0], y - mypos[1])
+        ux, uy = -ry, rx  # sideways axis as seen from us
+        # smooth the current velocity over ~0.25 s (obs velocities jitter)
+        recent = [p for p in tr if t - p[0] <= 0.25] or tr[-1:]
+        svx = sum(p[3] for p in recent) / len(recent)
+        svy = sum(p[4] for p in recent) / len(recent)
+        v_rad = svx * rx + svy * ry
+        v_lat = svx * ux + svy * uy
+        # reversal times of the sideways velocity (ignore drift below 2 m/s)
+        flips = []
+        last_sign = 0
+        for p in tr:
+            lat = p[3] * ux + p[4] * uy
+            sg = 1 if lat > 2.0 else -1 if lat < -2.0 else 0
+            if sg and last_sign and sg != last_sign:
+                flips.append(p[0])
+            if sg:
+                last_sign = sg
+        lat_disp = v_lat * tf
+        if len(flips) >= 2 and abs(v_lat) > 2.0:
+            gaps = [b - a for a, b in zip(flips, flips[1:])]
+            period = sum(gaps) / len(gaps)
+            since = t - flips[-1]
+            left = period - since
+            if 0.0 <= left < tf:
+                lat_disp = v_lat * left - v_lat * (tf - left)  # it turns around mid-flight
+            elif left < 0.0:
+                lat_disp = v_lat * tf * 0.5  # overdue: hedge toward the middle
+        vz = vel[2] if len(vel) > 2 else 0.0
+        lx = lat_disp / max(tf, 1e-3)
+        return (v_rad * rx + lx * ux, v_rad * ry + lx * uy, vz)
+
     def aim_at(self, src, pt):
         dx, dy, dz = pt[0] - src[0], pt[1] - src[1], pt[2] - src[2]
         return math.atan2(dy, dx), math.atan2(dz, math.hypot(dx, dy))
@@ -1105,7 +1156,11 @@ class Bot:
             k = w["kind"]
             s = w["stats"]
             if k == "gun":
-                p = self.lead_point(muz, tpos, tvel, cz, s["speed"], 0.06)
+                tv = tvel
+                if P_TRACK and kind == "mech":
+                    tf = math.dist(muz, (tpos[0], tpos[1], cz)) / s["speed"] + 0.06
+                    tv = self.predict_vel(actor["id"], pos, tvel, tf, obs["t"])
+                p = self.lead_point(muz, tpos, tv, cz, s["speed"], 0.06)
                 aims[i] = self.aim_at(muz, p)
             elif k == "laser":
                 p = (tpos[0] + tvel[0] * 0.08, tpos[1] + tvel[1] * 0.08, cz)
@@ -1215,6 +1270,13 @@ class Bot:
                     best = (d, e)
         if best and best[0] < 220:
             e = best[1]
+            if P_PREAIM:
+                # where it should be now (capped extrapolation), at body height: first shot lands sooner
+                age = min(1.5, t - e["t"])
+                px = e["pos"][0] + e["vel"][0] * age
+                py = e["pos"][1] + e["vel"][1] * age
+                pz = e["pos"][2] + 4.5 - (pos[2] + me["stats"].get("eye_height", 8.0))
+                return (math.atan2(py - pos[1], px - pos[0]), math.atan2(pz, max(1.0, math.hypot(px - pos[0], py - pos[1]))))
             return (math.atan2(e["pos"][1] - pos[1], e["pos"][0] - pos[0]), 0.0)
         # sounds
         snd = [s for s in obs["sounds"] if s["kind"] in ("gun", "laser", "laser_charge", "lightning", "mortar", "step", "boost", "jet")]
