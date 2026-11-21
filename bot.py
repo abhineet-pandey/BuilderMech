@@ -30,8 +30,9 @@ P_LOAD = _os.environ.get("P_LOAD", "def")  # loadout: def (lightning+laser) | gu
 P_UPG = _os.environ.get("P_UPG", "def")  # upgrade order: def (armor first) | off (gun damage first)
 P_FARM_HP = float(_os.environ.get("P_FARM_HP", "0.9"))  # only shoot crates/drones above this HP (lets regen run)
 P_GRAB = _os.environ.get("P_GRAB", "1") == "1"  # pick up nearby cubes in the middle of a fight
-P_GRAB_R = float(_os.environ.get("P_GRAB_R", "25"))  # how far (m) we detour for a cube mid-fight
+P_GRAB_R = float(_os.environ.get("P_GRAB_R", "45"))  # how far (m) we detour for a cube mid-fight
 P_CUBEW = float(_os.environ.get("P_CUBEW", "1"))  # weight of cubes / drones / crates when looting
+P_CUBEW_C = float(_os.environ.get("P_CUBEW_C", "1"))  # extra weight on loose cubes only when looting
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -44,6 +45,13 @@ UPGRADE_OFFENSE = [
     "gun_damage", "gun_rate", "lightning_efficiency", "laser_damage", "armor", "plating", "laser_charge",
     "lightning_range", "lightning_chain", "gun_velocity", "gyros", "gun_mag", "nanites", "capacitor",
     "reactor", "servos", "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity", "laser_pierce",
+]
+
+UPGRADE_HEAL = [
+    "armor", "nanites", "plating", "laser_damage", "lightning_efficiency", "gun_damage",
+    "gun_rate", "laser_charge", "lightning_range", "gyros", "lightning_chain", "gun_mag",
+    "gun_velocity", "capacitor", "reactor", "servos", "jets", "sensors", "mortar_reload",
+    "mortar_splash", "mortar_velocity", "laser_pierce",
 ]
 
 UPGRADE_PRIORITY = [
@@ -382,7 +390,7 @@ class Bot:
 
     def pick_upgrade(self, offer):
         ids = [c["id"] for c in offer["choices"]]
-        for u in (UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_PRIORITY):
+        for u in (UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
             if u in ids:
                 return ids.index(u)
         return 0
@@ -440,7 +448,7 @@ class Bot:
         for cid, (p, ts) in self.cubes.items():
             if self.in_circle(p, sc, sr, margin):
                 d = math.dist(p, pos)
-                cands.append((12.0 * P_CUBEW / (d + 15), p, "cube", None))
+                cands.append((12.0 * P_CUBEW * P_CUBEW_C / (d + 15), p, "cube", None))
         for pid, (kind, p, ts) in self.pickups.items():
             gain, _ = self.pickup_gain(kind, weapons, held)
             if gain <= 0 or t - self.bad_take.get(pid, -99) < 3:
