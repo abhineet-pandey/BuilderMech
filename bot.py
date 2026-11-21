@@ -48,6 +48,7 @@ P_TRACK = _os.environ.get("P_TRACK", "0") == "1"  # per-enemy motion history: st
 P_PREAIM = _os.environ.get("P_PREAIM", "0") == "1"  # pre-aim where a lost enemy should reappear (at body height)
 P_PRECHARGE = _os.environ.get("P_PRECHARGE", "0") == "1"  # charge the laser before a lost hostile reappears (instant first hit)
 P_HH_MEM = float(_os.environ.get("P_HH_MEM", "15"))  # hide-to-heal: hide from enemies seen within this many seconds
+P_UPGLIST = [u for u in _os.environ.get("P_UPGLIST", "").split(",") if u]  # explicit upgrade order (overrides P_UPG)
 P_JINK = float(_os.environ.get("P_JINK", "0"))  # per-decision chance to hop while a hostile with a clear shot is on us
 P_CUBEAVOID = _os.environ.get("P_CUBEAVOID", "0") == "1"  # at the cube cap, step around cubes instead of over them
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
@@ -580,6 +581,10 @@ class Bot:
 
     def pick_upgrade(self, offer):
         ids = [c["id"] for c in offer["choices"]]
+        if P_UPGLIST and not self.ffa:
+            for u in P_UPGLIST:
+                if u in ids:
+                    return ids.index(u)
         for u in (UPGRADE_FFA if (self.ffa and P_FFA_UPG == "hp") or P_UPG == "hp" else UPGRADE_GYRO if P_UPG == "gyro" else UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
             if u in ids:
                 return ids.index(u)
