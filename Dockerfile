@@ -4,5 +4,5 @@ RUN pip install --no-cache-dir numpy==2.2.6
 WORKDIR /bot
 COPY mechfight.py world.py bot.py ./
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV P_LOAD=gunlaser P_SEED=2 P_LDODGE=1
+ENV P_LOAD=gunlaser P_SEED=2 P_FACE=0.7
 ENTRYPOINT ["python3", "-u", "/bot/bot.py"]
