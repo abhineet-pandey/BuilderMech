@@ -20,12 +20,27 @@ P_GUN_R = float(_os.environ.get("P_GUN_R", "35"))
 P_LIGHT = _os.environ.get("P_LIGHT", "1") == "1"
 P_MAXLOS = int(_os.environ.get("P_MAXLOS", "99"))  # this many hostiles with a clear shot forces a retreat
 P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
-P_FINISH = _os.environ.get("P_FINISH", "0") == "1"  # stick with and close in on a badly hurt target
-P_CHAIN = _os.environ.get("P_CHAIN", "0") == "1"  # with lightning, prefer targets standing near other enemies
-P_AIMPRED = _os.environ.get("P_AIMPRED", "0") == "1"  # gun: fire if the aim will be on target after one tick of slew
+P_FINISH = _os.environ.get("P_FINISH", "1") == "1"  # stick with and close in on a badly hurt target
+P_CHAIN = _os.environ.get("P_CHAIN", "1") == "1"  # with lightning, prefer targets standing near other enemies
+P_AIMPRED = _os.environ.get("P_AIMPRED", "1") == "1"  # gun: fire if the aim will be on target after one tick of slew
+P_TOL = float(_os.environ.get("P_TOL", "0.9"))  # gun fire gate: allowed aim error, in target radii
+P_PRED_T = float(_os.environ.get("P_PRED_T", "1"))  # how many sim ticks ahead the predicted aim looks
+P_LPRED = _os.environ.get("P_LPRED", "0") == "1"  # laser: release on the predicted aim too
+P_LOAD = _os.environ.get("P_LOAD", "def")  # loadout: def (lightning+laser) | gunlight (gun+lightning) | gunlaser
+P_UPG = _os.environ.get("P_UPG", "def")  # upgrade order: def (armor first) | off (gun damage first)
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
+if P_LOAD == "gunlight":
+    WEAPON_VALUE = {"lightning": 3.2, "gun": 2.0, "laser": 1.0, "mortar": 0.0}
+elif P_LOAD == "gunlaser":
+    WEAPON_VALUE = {"laser": 3.0, "gun": 2.0, "lightning": 1.0, "mortar": 0.0}
+
+UPGRADE_OFFENSE = [
+    "gun_damage", "gun_rate", "lightning_efficiency", "laser_damage", "armor", "plating", "laser_charge",
+    "lightning_range", "lightning_chain", "gun_velocity", "gyros", "gun_mag", "nanites", "capacitor",
+    "reactor", "servos", "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity", "laser_pierce",
+]
 
 UPGRADE_PRIORITY = [
     "armor", "plating", "laser_damage", "lightning_efficiency", "nanites", "gun_damage",
@@ -363,7 +378,7 @@ class Bot:
 
     def pick_upgrade(self, offer):
         ids = [c["id"] for c in offer["choices"]]
-        for u in UPGRADE_PRIORITY:
+        for u in (UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_PRIORITY):
             if u in ids:
                 return ids.index(u)
         return 0
@@ -896,8 +911,8 @@ class Bot:
         # is held for 2 ticks, so a shot can still land if we're about to swing onto the target
         pred = my_aim
         if P_AIMPRED:
-            ty = st.get("turn_rate", 4.0) * 0.05
-            tp = st.get("pitch_rate", 3.0) * 0.05
+            ty = st.get("turn_rate", 4.0) * 0.05 * P_PRED_T
+            tp = st.get("pitch_rate", 3.0) * 0.05 * P_PRED_T
             dy = wrap(aim[0] - my_aim[0])
             dp = aim[1] - my_aim[1]
             pred = (my_aim[0] + max(-ty, min(ty, dy)), my_aim[1] + max(-tp, min(tp, dp)))
@@ -910,7 +925,7 @@ class Bot:
             want_i = aims[i]
             if k == "gun":
                 if los and dist < s["range"] and w.get("ammo", 0) > 0 and w.get("reload", 0) == 0:
-                    if self.aimed(my_aim, want_i, dist, radius * 0.9) or (P_AIMPRED and self.aimed(pred, want_i, dist, radius * 0.8)):
+                    if self.aimed(my_aim, want_i, dist, radius * P_TOL) or (P_AIMPRED and self.aimed(pred, want_i, dist, radius * (P_TOL - 0.1))):
                         fire[i] = True
             elif k == "lightning":
                 cone = math.radians(s.get("cone_deg", 30))
@@ -921,7 +936,7 @@ class Bot:
                 full = s.get("charge", 0.75)
                 if ch > 0:
                     # charging: keep holding until full and on target, then let go
-                    if ch >= full - 0.03 and self.aimed(my_aim, want_i, dist, radius * 0.8) and los:
+                    if ch >= full - 0.03 and (self.aimed(my_aim, want_i, dist, radius * 0.8) or (P_LPRED and self.aimed(pred, want_i, dist, radius * 0.7))) and los:
                         fire[i] = False
                     else:
                         fire[i] = True
