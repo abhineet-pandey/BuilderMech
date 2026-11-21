@@ -33,8 +33,9 @@ P_GRAB = _os.environ.get("P_GRAB", "1") == "1"  # pick up nearby cubes in the mi
 P_GRAB_R = float(_os.environ.get("P_GRAB_R", "45"))  # how far (m) we detour for a cube mid-fight
 P_CUBEW = float(_os.environ.get("P_CUBEW", "1"))  # weight of cubes / drones / crates when looting
 P_CUBEW_C = float(_os.environ.get("P_CUBEW_C", "2"))  # extra weight on loose cubes only when looting
-P_ENGAGE = float(_os.environ.get("P_ENGAGE", "260"))  # ignore enemies farther than this unless they shot us recently
-P_NPCAVOID = _os.environ.get("P_NPCAVOID", "0") == "1"  # while healing, keep away from drones (they shoot within 45 m)
+P_ENGAGE = float(_os.environ.get("P_ENGAGE", "120"))  # ignore enemies farther than this unless they shot us recently
+P_NPCAVOID = _os.environ.get("P_NPCAVOID", "1") == "1"  # while healing, keep away from drones (they shoot within 45 m)
+P_HOLD = _os.environ.get("P_HOLD", "0") == "1"  # nothing to do: stand still (silent) instead of walking laps
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -542,6 +543,10 @@ class Bot:
         self.mode = "roam"
         target = sc
         d = math.hypot(target[0] - pos[0], target[1] - pos[1])
+        if P_HOLD and d < sr * 0.6:
+            # safely inside the circle with nothing to do: stay put and quiet, let them come to us
+            self.mode = "hold"
+            return (0.0, 0.0), False, None, None
         if d < sr * 0.35:
             ang = t * 0.15 + (obs["self"]["id"] or 0)
             target = (sc[0] + math.cos(ang) * sr * 0.3, sc[1] + math.sin(ang) * sr * 0.3)
