@@ -11,15 +11,18 @@ from world import World
 
 TAU = 2 * math.pi
 import os as _os
-P_RET = float(_os.environ.get("P_RET", "0.1"))
+P_RET = float(_os.environ.get("P_RET", "0"))
 P_RET_OUT = float(_os.environ.get("P_RET_OUT", "0.7"))
 P_AVOID = _os.environ.get("P_AVOID", "0") == "1"
-P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0.3"))
-P_LASER_R = float(_os.environ.get("P_LASER_R", "150"))
-P_GUN_R = float(_os.environ.get("P_GUN_R", "55"))
+P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0"))
+P_LASER_R = float(_os.environ.get("P_LASER_R", "80"))
+P_GUN_R = float(_os.environ.get("P_GUN_R", "35"))
 P_LIGHT = _os.environ.get("P_LIGHT", "1") == "1"
-P_MAXLOS = int(_os.environ.get("P_MAXLOS", "4"))  # this many hostiles with a clear shot forces a retreat
+P_MAXLOS = int(_os.environ.get("P_MAXLOS", "99"))  # this many hostiles with a clear shot forces a retreat
 P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
+P_FINISH = _os.environ.get("P_FINISH", "0") == "1"  # stick with and close in on a badly hurt target
+P_CHAIN = _os.environ.get("P_CHAIN", "0") == "1"  # with lightning, prefer targets standing near other enemies
+P_AIMPRED = _os.environ.get("P_AIMPRED", "0") == "1"  # gun: fire if the aim will be on target after one tick of slew
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -84,6 +87,7 @@ class Bot:
         self.retreating = False
         self.hostile = {}  # enemy id -> last time it damaged us
         self._rays = None
+        self.cur_target = None
 
     # ------------------------------------------------------------------ helpers
     def zone_now(self, z, t):
@@ -150,7 +154,7 @@ class Bot:
             m["_seen"] = bool(a or b)
 
         hp_frac = me["hp"] / max(1.0, me["max_hp"])
-        target = self.pick_target(enemies, t)
+        target = self.pick_target(enemies, t, weapons)
 
         # --- weapon management: take good pickups in reach
         self.manage_pickups(obs, act, weapons, held)
@@ -327,7 +331,11 @@ class Bot:
                 del self.enemies[k]
 
     # ------------------------------------------------------------------ targeting
-    def pick_target(self, enemies, t):
+    def pick_target(self, enemies, t, weapons=()):
+        lightning = None
+        for w in weapons:
+            if w and w["kind"] == "lightning":
+                lightning = w["stats"]
         best = None
         best_s = 1e9
         for m in enemies:
@@ -340,8 +348,17 @@ class Bot:
                 s += 2.5
             if m["id"] == self.last_attacker and t - self.last_attacker_t < 3:
                 s -= 1.5
+            if P_FINISH and m["id"] == self.cur_target:
+                s -= 0.6  # don't flip between targets
+                if frac < 0.35 and d < 200:
+                    s -= 4.0  # nearly dead: finish it
+            if P_CHAIN and lightning and d < lightning.get("range", 45) * 1.5:
+                cr = lightning.get("chain_range", 14)
+                near = sum(1 for o in enemies if o is not m and math.dist(o["pos"], m["pos"]) < cr)
+                s -= 0.8 * min(near, int(lightning.get("chain", 2)))
             if s < best_s:
                 best_s, best = s, m
+        self.cur_target = best["id"] if best is not None else None
         return best
 
     def pick_upgrade(self, offer):
@@ -514,6 +531,9 @@ class Bot:
         d = math.hypot(tp[0] - pos[0], tp[1] - pos[1])
         ux, uy = norm2(tp[0] - pos[0], tp[1] - pos[1])
         rng = self.desired_range(weapons, me["energy"])
+        tfrac = (target.get("hp") or 1400) / max(1.0, target.get("max_hp") or 1400)
+        if P_FINISH and tfrac < 0.3:
+            rng = min(rng, 20.0)  # close in for the kill: fewer misses, no time to heal
         if not target["_los"]:
             rng = min(rng, 45.0)  # close in to find it
         radial = max(-1.0, min(1.0, (d - rng) / max(15.0, rng * 0.5)))
@@ -529,7 +549,7 @@ class Bot:
             wx += cx * k
             wy += cy * k
         want = norm2(wx, wy)
-        boost = d > rng + 40 and me["energy"] > 60
+        boost = d > rng + 40 and me["energy"] > 60 or (P_FINISH and tfrac < 0.3 and d > rng + 15 and me["energy"] > 30)
         return want, boost
 
     def retreat_move(self, obs, threats, sc, sr):
@@ -872,6 +892,15 @@ class Bot:
             aim = aims[order[0][1]]
         else:
             aim = self.aim_at(muz, (tpos[0], tpos[1], cz))
+        # where the torso will point after one sim tick of turning toward the commanded aim: the trigger
+        # is held for 2 ticks, so a shot can still land if we're about to swing onto the target
+        pred = my_aim
+        if P_AIMPRED:
+            ty = st.get("turn_rate", 4.0) * 0.05
+            tp = st.get("pitch_rate", 3.0) * 0.05
+            dy = wrap(aim[0] - my_aim[0])
+            dp = aim[1] - my_aim[1]
+            pred = (my_aim[0] + max(-ty, min(ty, dy)), my_aim[1] + max(-tp, min(tp, dp)))
         # fire each weapon whose own solution is close to our actual aim
         for i, w in enumerate(weapons):
             if not w or i not in aims:
@@ -881,7 +910,7 @@ class Bot:
             want_i = aims[i]
             if k == "gun":
                 if los and dist < s["range"] and w.get("ammo", 0) > 0 and w.get("reload", 0) == 0:
-                    if self.aimed(my_aim, want_i, dist, radius * 0.9):
+                    if self.aimed(my_aim, want_i, dist, radius * 0.9) or (P_AIMPRED and self.aimed(pred, want_i, dist, radius * 0.8)):
                         fire[i] = True
             elif k == "lightning":
                 cone = math.radians(s.get("cone_deg", 30))
