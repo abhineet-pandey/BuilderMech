@@ -32,7 +32,9 @@ P_FARM_HP = float(_os.environ.get("P_FARM_HP", "0.9"))  # only shoot crates/dron
 P_GRAB = _os.environ.get("P_GRAB", "1") == "1"  # pick up nearby cubes in the middle of a fight
 P_GRAB_R = float(_os.environ.get("P_GRAB_R", "45"))  # how far (m) we detour for a cube mid-fight
 P_CUBEW = float(_os.environ.get("P_CUBEW", "1"))  # weight of cubes / drones / crates when looting
-P_CUBEW_C = float(_os.environ.get("P_CUBEW_C", "1"))  # extra weight on loose cubes only when looting
+P_CUBEW_C = float(_os.environ.get("P_CUBEW_C", "2"))  # extra weight on loose cubes only when looting
+P_ENGAGE = float(_os.environ.get("P_ENGAGE", "260"))  # ignore enemies farther than this unless they shot us recently
+P_NPCAVOID = _os.environ.get("P_NPCAVOID", "0") == "1"  # while healing, keep away from drones (they shoot within 45 m)
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -233,6 +235,18 @@ class Bot:
         else:
             self.mode = "loot"
             want, boost, aim_actor, aim_kind = self.loot_move(obs, npcs, hp_frac, sc, sr)
+            if P_NPCAVOID and hp_frac < P_FARM_HP and aim_kind != "npc":
+                # drones fire at any mech within 45 m; getting hit resets the 5 s regen timer
+                rx = ry = 0.0
+                for n in npcs:
+                    dn = math.hypot(n["pos"][0] - pos[0], n["pos"][1] - pos[1])
+                    if 0.1 < dn < 55:
+                        k = (55 - dn) / 55 * 1.6
+                        rx += (pos[0] - n["pos"][0]) / dn * k
+                        ry += (pos[1] - n["pos"][1]) / dn * k
+                if rx or ry:
+                    want = norm2(want[0] + rx, want[1] + ry)
+                    self.mode += "+avoidnpc"
 
         # --- supply drop: go take it, and once inside the ring stay there until it's ours
         dmove = self.drop_plan(obs, enemies, hp_frac, sc, sr)
@@ -369,6 +383,8 @@ class Bot:
             d = m["_d"]
             if d > 260:
                 continue
+            if d > P_ENGAGE and t - self.hostile.get(m["id"], -99) > 12:
+                continue  # far away and not shooting at us: not our fight (yet)
             frac = (m.get("hp") or 1400) / max(1.0, m.get("max_hp") or 1400)
             s = d / 60.0 + frac * 2.0
             if not m["_los"]:
