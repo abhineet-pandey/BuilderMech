@@ -25,6 +25,12 @@ from world import World  # noqa: E402
 
 KIT = os.path.join(ROOT, "kit", "mechfight-kit")
 PASSIVE = os.environ.get("SIM_PASSIVE") == "1"
+# calibration knobs for the house bots (defaults = original behaviour)
+SIM_AIM = float(os.environ.get("SIM_AIM", "1"))  # aim error multiplier
+SIM_REACT = float(os.environ.get("SIM_REACT", "0"))  # seconds of continuous sight before a house bot fires
+SIM_ENGAGE = float(os.environ.get("SIM_ENGAGE", "120"))  # non-hunters engage us within this range when they see us
+SIM_DMG = float(os.environ.get("SIM_DMG", "1"))
+SIM_MYDMG = float(os.environ.get("SIM_MYDMG", "1"))  # what-if: our damage to mechs  # house bot damage multiplier
 TAU = 2 * math.pi
 
 
@@ -167,6 +173,10 @@ class Sim:
         self.bot_errors = 0
         self.house_seen_me_t = -99
         self.my_kills = 0
+        self.my_dmg_log = []
+        self.my_dealt = {}
+        self.my_shots = {}
+        self.my_fight_ticks = 0
         self.drops = []
         for k, dt in enumerate(cfg["drops"]["times"]):
             self.drops.append({"id": 20000 + k, "call": dt, "pos": None, "holder": None, "progress": 0.0, "taken": False})
@@ -250,6 +260,8 @@ class Sim:
         return math.hypot(m.pos[0] - z["center"][0], m.pos[1] - z["center"][1]) <= z["radius"]
 
     def emit_sound(self, src, kind):
+        if src.level is None and kind in ("gun", "laser", "lightning", "mortar"):
+            self.my_shots[kind] = self.my_shots.get(kind, 0) + 1
         rng_ = self.cfg["sound"]["range"].get(kind, 100)
         for o in self.mechs:
             if not o.alive or o is src:
@@ -273,6 +285,12 @@ class Sim:
                 rear = True
             mult *= (1 - victim.armor)
         amt = amount * mult
+        if attacker is not None and attacker.level is not None and victim.level is None:
+            amt *= SIM_DMG
+            self.my_dmg_log.append((self.t, attacker.id, attacker.level, amt, rear))
+        if attacker is not None and attacker.level is None and victim.level is not None:
+            amt *= SIM_MYDMG
+            self.my_dealt[weapon] = self.my_dealt.get(weapon, 0) + amt
         victim.hp -= amt
         victim.last_combat = self.t
         if attacker is not None:
@@ -787,7 +805,7 @@ class Sim:
         knows_me = me.alive and (self.t - self.house_seen_me_t < 5 or hunting)
         goal = None
         provoked = self.t - m.provoked_t < 8
-        engage = me.alive and (hunting and knows_me or ((not PASSIVE or provoked) and sees_me and math.dist(m.pos, me.pos) < 120))
+        engage = me.alive and (hunting and knows_me or ((not PASSIVE or provoked) and sees_me and math.dist(m.pos, me.pos) < SIM_ENGAGE))
         if engage:
             d = math.dist(m.pos, me.pos)
             goal = me.pos if d > 60 else None
@@ -800,12 +818,19 @@ class Sim:
             c = me.center()
             tt = math.dist(src, c) / 252
             lead = (0.3, 0.6, 0.85, 1.0)[lvl]
-            err = math.radians((2.5, 1.5, 0.8, 0.4)[lvl])
+            err = math.radians((2.5, 1.5, 0.8, 0.4)[lvl]) * SIM_AIM
             px, py = c[0] + me.vel[0] * tt * lead, c[1] + me.vel[1] * tt * lead
             yaw = math.atan2(py - src[1], px - src[0]) + self.rng.gauss(0, err)
             pit = math.atan2(c[2] - src[2], math.hypot(px - src[0], py - src[1]))
             a["aim"] = [yaw, pit]
             vis = self.w.los(src, c)
+            if vis:
+                if getattr(m, "see_start", None) is None:
+                    m.see_start = self.t
+            else:
+                m.see_start = None
+            if vis and self.t - m.see_start < SIM_REACT:
+                vis = False
             fire = [False, False]
             for i, w in enumerate(m.weapons):
                 if not w:
@@ -904,6 +929,8 @@ class Sim:
                             a = {}
                         mf.draw.clear()
                         self.bot_ms.append((time.perf_counter() - t0) * 1000)
+                        if str(getattr(self.bot, "mode", "")).startswith("fight"):
+                            self.my_fight_ticks += 1
                         json.dumps(a)
                     else:
                         m.events, m.sounds, m.beams = [], [], []
@@ -994,7 +1021,12 @@ def _run_one(args):
     place = sim.run()
     ms = sorted(sim.bot_ms)
     me = sim.me
-    return dict(seed=seed, place=place, t=sim.t, kills=sim.my_kills, cubes=me.cubes,
+    recent = [x for x in sim.my_dmg_log if sim.t - x[0] < 10]
+    att = sorted({(x[1], x[2]) for x in recent})
+    diag = dict(dealt={k: round(v) for k, v in sim.my_dealt.items()}, shots=dict(sim.my_shots), fight_s=round(sim.my_fight_ticks * 0.1, 1), alive=me.alive, hunters=len(sim.hunters), attackers=[a[1][0] for a in att],
+                dmg10=round(sum(x[3] for x in recent)), mode=getattr(sim.bot, "mode", "?"),
+                maxhp=round(me.max_hp), rear_frac=round(sum(x[3] for x in sim.my_dmg_log if x[4]) / max(1, sum(x[3] for x in sim.my_dmg_log)), 2), zone_r=round(sim.zone()["radius"]))
+    return dict(diag=diag, seed=seed, place=place, t=sim.t, kills=sim.my_kills, cubes=me.cubes,
                 weapons=[w and w["kind"] for w in me.weapons], upg=me.upgrades,
                 p99=ms[int(len(ms) * 0.99)] if ms else 0, mx=ms[-1] if ms else 0, err=sim.bot_errors)
 
@@ -1018,7 +1050,7 @@ def main():
     for r in res:
         pts.append(16 - r["place"])
         print(f"seed {r['seed']}: place {r['place']:2d} t {r['t']:5.1f} kills {r['kills']} cubes {r['cubes']} "
-              f"weapons {r['weapons']} upg {r['upg']} p99 {r['p99']:.1f}ms max {r['mx']:.1f}ms", flush=True)
+              f"weapons {r['weapons']} upg {r['upg']} p99 {r['p99']:.1f}ms max {r['mx']:.1f}ms  DIAG {r['diag']}", flush=True)
     n = len(pts)
     mean = sum(pts) / n
     sd = (sum((p - mean) ** 2 for p in pts) / max(1, n - 1)) ** 0.5
