@@ -28,6 +28,8 @@ P_PRED_T = float(_os.environ.get("P_PRED_T", "1"))  # how many sim ticks ahead t
 P_LPRED = _os.environ.get("P_LPRED", "0") == "1"  # laser: release on the predicted aim too
 P_LOAD = _os.environ.get("P_LOAD", "def")  # loadout: def (lightning+laser) | gunlight (gun+lightning) | gunlaser
 P_UPG = _os.environ.get("P_UPG", "def")  # upgrade order: def (armor first) | off (gun damage first)
+P_FARM_HP = float(_os.environ.get("P_FARM_HP", "0.45"))  # only shoot crates/drones above this HP (lets regen run)
+P_GRAB = _os.environ.get("P_GRAB", "0") == "1"  # pick up nearby cubes in the middle of a fight
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -445,7 +447,7 @@ class Bot:
                 d = math.dist(p, pos) + max(0.0, p[2] - pos[2]) * 1.5
                 cands.append((gain * 3.5 / (d + 20), p, "pickup", None))
         has_weapon = any(w for w in weapons)
-        if hp_frac > 0.45 and has_weapon:
+        if hp_frac > P_FARM_HP and has_weapon:
             for n in npcs:
                 p = n["pos"]
                 if self.in_circle(p, sc, sr, margin):
@@ -564,6 +566,16 @@ class Bot:
             wx += cx * k
             wy += cy * k
         want = norm2(wx, wy)
+        if P_GRAB:
+            # a cube within reach is worth a detour: +HP (heals the difference), +damage, upgrade progress
+            best_c = None
+            for cid, (cp, ts) in self.cubes.items():
+                dc_ = math.hypot(cp[0] - pos[0], cp[1] - pos[1])
+                if dc_ < 25 and abs(cp[2] - pos[2]) < 4 and (best_c is None or dc_ < best_c[0]):
+                    best_c = (dc_, cp)
+            if best_c is not None:
+                gx, gy = norm2(best_c[1][0] - pos[0], best_c[1][1] - pos[1])
+                want = norm2(want[0] * 0.35 + gx, want[1] * 0.35 + gy)
         boost = d > rng + 40 and me["energy"] > 60 or (P_FINISH and tfrac < 0.3 and d > rng + 15 and me["energy"] > 30)
         return want, boost
 

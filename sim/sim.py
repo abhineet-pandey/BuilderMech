@@ -309,6 +309,7 @@ class Sim:
         amt = amount * (1 + 0.04 * min(attacker.cubes, 10))
         n["hp"] -= amt
         n["target"] = attacker.id
+        attacker.last_combat = self.t  # dealing damage resets the regen timer
         attacker.events.append({"type": "hit", "target": n["id"], "amount": amt, "weapon": "x"})
         if n["hp"] <= 0:
             for k in range(2):
@@ -319,6 +320,7 @@ class Sim:
         c = self.crates.get(cid)
         if not c:
             return
+        attacker.last_combat = self.t
         c[1] -= amount
         if c[1] <= 0:
             del self.crates[cid]
