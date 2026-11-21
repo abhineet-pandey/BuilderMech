@@ -46,6 +46,8 @@ P_HURTSKIP = float(_os.environ.get("P_HURTSKIP", "0"))  # below this HP, don't s
 P_HEALSTILL = _os.environ.get("P_HEALSTILL", "0") == "1"  # hurt with no known enemy around: stand still and quiet  # leave alone mechs that aren't aiming at / shooting / near us
 P_TRACK = _os.environ.get("P_TRACK", "0") == "1"  # per-enemy motion history: strafe-aware gun lead + extrapolated pre-aim
 P_PREAIM = _os.environ.get("P_PREAIM", "0") == "1"  # pre-aim where a lost enemy should reappear (at body height)
+P_PRECHARGE = _os.environ.get("P_PRECHARGE", "0") == "1"  # charge the laser before a lost hostile reappears (instant first hit)
+P_HH_MEM = float(_os.environ.get("P_HH_MEM", "15"))  # hide-to-heal: hide from enemies seen within this many seconds
 P_LDODGE = _os.environ.get("P_LDODGE", "0") == "1"  # sidestep enemy lasers that are charging and aimed at us
 P_FACE = float(_os.environ.get("P_FACE", "0"))  # target-choice penalty per active attacker we'd turn our back on
 # --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
@@ -318,7 +320,7 @@ class Bot:
                 # regen needs 5 s untouched; house bots only know where we are while one of them sees us
                 known = []
                 for eid, e in self.enemies.items():
-                    if t - e["t"] < 15:
+                    if t - e["t"] < P_HH_MEM:
                         d_e = math.dist(pos, e["pos"])
                         if d_e < 220:
                             known.append({"pos": e["pos"], "_d": d_e})
@@ -400,6 +402,17 @@ class Bot:
             fire = self.laser_release_idle(weapons)
         if hold_fire:
             fire = self.laser_release_idle(weapons)
+        if P_PRECHARGE and aim_actor is None and not hold_fire and not self.mode.startswith("heal")                 and not (P_HEALHIDE and hp_frac < P_HEALHIDE):
+            # a hostile we just lost sight of is probably about to reappear: have a full charge waiting
+            li = held.get("laser")
+            if li is not None:
+                lw = weapons[li]
+                if (lw.get("charge", 0) or 0) == 0 and lw["cooldown"] <= 0.05:
+                    for eid, e in self.enemies.items():
+                        if t - e["t"] < 2.5 and t - self.hostile.get(eid, -99) < 8 and math.dist(pos, e["pos"]) < 90:
+                            fire[li] = True
+                            self.mode += "+precharge"
+                            break
         act["aim"] = [round(aim[0], 4), round(max(self.mech_cfg["min_pitch"], min(self.mech_cfg["max_pitch"], aim[1])), 4)]
         act["fire"] = fire
 
