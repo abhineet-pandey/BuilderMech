@@ -30,7 +30,9 @@ SIM_AIM = float(os.environ.get("SIM_AIM", "1"))  # aim error multiplier
 SIM_REACT = float(os.environ.get("SIM_REACT", "0"))  # seconds of continuous sight before a house bot fires
 SIM_ENGAGE = float(os.environ.get("SIM_ENGAGE", "120"))  # non-hunters engage us within this range when they see us
 SIM_DMG = float(os.environ.get("SIM_DMG", "1"))
-SIM_MYDMG = float(os.environ.get("SIM_MYDMG", "1"))  # what-if: our damage to mechs  # house bot damage multiplier
+SIM_MYDMG = float(os.environ.get("SIM_MYDMG", "1"))
+SIM_FFA = int(os.environ.get("SIM_FFA", "0"))  # free-for-all: this many rival bots, the rest expert house bots attacking anyone
+SIM_RIVAL = os.environ.get("SIM_RIVAL", "_rival")  # module holding the rival Bot class  # what-if: our damage to mechs  # house bot damage multiplier
 TAU = 2 * math.pi
 
 
@@ -97,10 +99,11 @@ class Mech:
 
 
 class Sim:
-    def __init__(self, cfg, world, seed, bot_factory, all_hunt_t=300.0, verbose=False):
+    def __init__(self, cfg, world, seed, bot_factory, all_hunt_t=300.0, verbose=False, rival_factory=None):
         self.cfg = cfg
         self.w = world
         self.rng = random.Random(seed)
+        self.seed = seed
         self.t = 0.0
         self.tick = 0
         self.verbose = verbose
@@ -132,6 +135,8 @@ class Sim:
             spawns.append((x, y, world.ground(x, y)))
         self.rng.shuffle(spawns)
         levels = ["easy"] * 4 + ["medium"] * 4 + ["hard"] * 4 + ["expert"] * 3
+        if SIM_FFA:
+            levels = ["rival"] * SIM_FFA + ["expert"] * (15 - SIM_FFA)
         me_slot = self.rng.randrange(16)
         li = 0
         for i in range(16):
@@ -169,6 +174,10 @@ class Sim:
             c, r = nc, nr
         self.hunters = set()
         self.bot = bot_factory({"type": "hello", "slot": self.me.id, "seed": seed, "map": {"dir": os.path.join(KIT, "arena")}, "config": cfg})
+        self.me.botobj = self.bot
+        for m in self.mechs:
+            if m.level == "rival":
+                m.botobj = rival_factory({"type": "hello", "slot": m.id, "seed": seed * 31 + m.id, "map": {"dir": os.path.join(KIT, "arena")}, "config": cfg})
         self.bot_ms = []
         self.bot_errors = 0
         self.house_seen_me_t = -99
@@ -296,6 +305,7 @@ class Sim:
         if attacker is not None:
             attacker.last_combat = self.t
             victim.provoked_t = self.t
+            victim.provoked_by = attacker.id
             attacker.events.append({"type": "hit", "target": victim.id, "amount": round(amt, 1), "weapon": weapon, "rear": rear})
             if attacker.level is not None and victim.level is None:
                 self.house_seen_me_t = self.t
@@ -305,6 +315,8 @@ class Sim:
             victim.alive = False
             victim.death_t = self.tick
             self.deaths.append((self.tick, victim.id))
+            if os.environ.get("SIM_DEATHLOG"):
+                print(f"DEATH seed={self.seed} t={self.t:.1f} victim={victim.id}/{victim.level} by={attacker.id if attacker else None}/{attacker.level if attacker else '-'} weapon={weapon}", file=sys.stderr)
             if attacker is not None:
                 attacker.events.append({"type": "kill", "target": victim.id})
                 attacker.kills += 1
@@ -794,10 +806,11 @@ class Sim:
         """A simple squad bot. Accuracy and reaction depend on level."""
         cfg = self.cfg
         lvl = {"easy": 0, "medium": 1, "hard": 2, "expert": 3}[m.level]
-        me = self.me
+        tgt = self.ffa_target(m) if SIM_FFA else None
+        me = self.me if tgt is None else tgt
         a = {"move": [0, 0], "aim": m.cmd_aim, "fire": [False, False]}
         z = self.zone()
-        hunting = m.id in self.hunters
+        hunting = m.id in self.hunters or tgt is not None
         # shared vision of us
         sees_me = me.alive and (self.can_see(m, me.center()) or self.t - self.house_seen_me_t < 1.0)
         if sees_me and self.can_see(m, me.center()):
@@ -891,6 +904,22 @@ class Sim:
         return a
 
     # ------------------------------------------------------------------ loop
+    def ffa_target(self, m):
+        """FFA house bot: stick with its target while it's visible, else the nearest mech it can see (or whoever shot it)."""
+        cur = getattr(m, "ffa_tgt", None)
+        if cur is not None and cur.alive and math.dist(cur.pos, m.pos) < 200 and self.can_see(m, cur.center()):
+            return cur
+        best = None
+        for o in self.mechs:
+            if o is m or not o.alive:
+                continue
+            d = math.dist(o.pos, m.pos)
+            if d < 150 and (self.can_see(m, o.center()) or (getattr(m, "provoked_by", None) == o.id and self.t - m.provoked_t < 5)):
+                if best is None or d < best[0]:
+                    best = (d, o)
+        m.ffa_tgt = best[1] if best else None
+        return m.ffa_tgt
+
     def update_hunters(self):
         alive_house = [m for m in self.mechs if m.alive and m.level is not None]
         order = sorted(alive_house, key=lambda m: ["easy", "medium", "hard", "expert"].index(m.level))
@@ -907,7 +936,8 @@ class Sim:
             if len(alive) <= 1 or not self.me.alive:
                 break
             if self.tick % 2 == 0:
-                self.update_hunters()
+                if not SIM_FFA:
+                    self.update_hunters()
                 # offers time out
                 for m in alive:
                     if m.offers and self.t > m.offers[0]["expires"]:
@@ -932,6 +962,14 @@ class Sim:
                         if str(getattr(self.bot, "mode", "")).startswith("fight"):
                             self.my_fight_ticks += 1
                         json.dumps(a)
+                    elif m.level == "rival":
+                        obs = self.observe(m)
+                        try:
+                            with contextlib.redirect_stdout(io.StringIO()):
+                                a = m.botobj.act(obs) or {}
+                        except Exception:
+                            a = {}
+                        mf.draw.clear()
                     else:
                         m.events, m.sounds, m.beams = [], [], []
                         a = self.house_act(m)
@@ -1017,7 +1055,12 @@ def _run_one(args):
             pass
 
     botmod.World = Cached
-    sim = Sim(cfg, _W, seed, botmod.Bot, all_hunt_t=all_hunt)
+    rival = None
+    if SIM_FFA:
+        rivmod = importlib.import_module(SIM_RIVAL)
+        rivmod.World = Cached
+        rival = rivmod.Bot
+    sim = Sim(cfg, _W, seed, botmod.Bot, all_hunt_t=all_hunt, rival_factory=rival)
     place = sim.run()
     ms = sorted(sim.bot_ms)
     me = sim.me

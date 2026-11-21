@@ -5,3 +5,4 @@ __pycache__/
 sample_imp.md
 .claude
 MECHFIGHT_MAX_SCORE_IMPLEMENTATION.md
+sim/_rival.py

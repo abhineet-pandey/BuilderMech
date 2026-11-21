@@ -39,7 +39,17 @@ P_HOLD = _os.environ.get("P_HOLD", "0") == "1"  # nothing to do: stand still (si
 P_EXPLORE = _os.environ.get("P_EXPLORE", "0") == "1"  # nothing to do: visit unexplored parts of the circle (find loot)
 P_DROP_R = float(_os.environ.get("P_DROP_R", "140"))  # how far (m) we go for a supply drop
 P_CUBECAP = int(_os.environ.get("P_CUBECAP", "999"))  # stop chasing cubes at this many (past stat_cap they only make us bigger)
-P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"  # 0: no boosting in a fight while holding lightning (save energy for arcs)
+P_LBOOST = _os.environ.get("P_LBOOST", "1") == "1"
+# --- free-for-all (qualifying / final) mode. Practice house bots never kill each other, so mechs dying that we
+# didn't kill means a real free-for-all: there, survival pays and nobody is hunting us specifically.
+P_FFA = _os.environ.get("P_FFA", "auto")  # auto (detect) | 0 (never) | 1 (always)
+P_FFA_DEATHS = int(_os.environ.get("P_FFA_DEATHS", "3"))  # deaths not by us that switch the mode on
+P_FFA_ENG = float(_os.environ.get("P_FFA_ENG", "40"))  # FFA: only take on non-hostile mechs this close
+P_FFA_WEAK = float(_os.environ.get("P_FFA_WEAK", "0.3"))  # FFA: ...or ones this badly hurt (cheap kill, cubes)
+P_FFA_RET = float(_os.environ.get("P_FFA_RET", "0"))  # FFA: retreat below this HP fraction
+P_FFA_RET_OUT = float(_os.environ.get("P_FFA_RET_OUT", "0.8"))
+P_FFA_AVOID = _os.environ.get("P_FFA_AVOID", "1") == "1"  # FFA: hold fire on mechs that aren't fighting us
+P_FFA_UPG = _os.environ.get("P_FFA_UPG", "hp")  # FFA upgrade order: hp (plating first) | def  # 0: no boosting in a fight while holding lightning (save energy for arcs)
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
 WEAPON_VALUE = {"lightning": 3.2, "laser": 3.0, "gun": 2.0, "mortar": 0.0}
@@ -59,6 +69,12 @@ UPGRADE_HEAL = [
     "gun_rate", "laser_charge", "lightning_range", "gyros", "lightning_chain", "gun_mag",
     "gun_velocity", "capacitor", "reactor", "servos", "jets", "sensors", "mortar_reload",
     "mortar_splash", "mortar_velocity", "laser_pierce",
+]
+
+UPGRADE_FFA = [
+    "plating", "armor", "nanites", "laser_damage", "gun_damage", "gun_rate", "laser_charge", "gyros",
+    "lightning_efficiency", "gun_mag", "gun_velocity", "lightning_range", "lightning_chain", "capacitor",
+    "reactor", "servos", "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity", "laser_pierce",
 ]
 
 UPGRADE_PRIORITY = [
@@ -126,6 +142,9 @@ class Bot:
         self.visited = set()  # 40 m cells we have walked through
         self._explore_key = None
         self._explore_cells = []
+        self.n_mechs = cfg.get("match", {}).get("mechs", 16)
+        self.kills = 0
+        self.ffa = P_FFA == "1"
 
     # ------------------------------------------------------------------ helpers
     def zone_now(self, z, t):
@@ -217,11 +236,12 @@ class Bot:
 
         # retreat with hysteresis: pull out when hurt or outnumbered, come back only when healed
         tgt_frac = ((target.get("hp") or 1400) / max(1.0, target.get("max_hp") or 1400)) if target else 1.0
-        enter = (hp_frac < P_RET and not (tgt_frac < 0.2 and target and target["_d"] < 60)) \
+        p_ret, p_ret_out = (P_FFA_RET, P_FFA_RET_OUT) if self.ffa else (P_RET, P_RET_OUT)
+        enter = (hp_frac < p_ret and not (tgt_frac < 0.2 and target and target["_d"] < 60)) \
             or (n_host_los >= 2 and hp_frac < P_OUTNUM) or n_host_los >= P_MAXLOS
         if threats_near and enter:
             self.retreating = True
-        if self.retreating and (hp_frac > P_RET_OUT or not threats_near and hp_frac > 0.75):
+        if self.retreating and (hp_frac > p_ret_out or not threats_near and hp_frac > 0.75):
             self.retreating = False
         hold_fire = False
 
@@ -234,7 +254,8 @@ class Bot:
                 # cornered: someone is right on us with a clear shot, fight back
                 cornered = any(m["_d"] < 40 and m["_los"] for m in threats_near)
                 hold_fire = not cornered and (hidden or hp_frac < 0.5)
-            elif P_AVOID and not target["_hostile"] and (hp_frac < 0.8 or len(threats_near) > 1):
+            elif (P_AVOID and not target["_hostile"] and (hp_frac < 0.8 or len(threats_near) > 1)) or                     (self.ffa and P_FFA_AVOID and t - self.hostile.get(target["id"], -99) > 8 and tgt_frac >= P_FFA_WEAK
+                     and target["_d"] > 25):
                 # don't start fights we don't need: keep looting but stay out of its way
                 self.mode = "avoid"
                 want, boost, aim_actor2, aim_kind2 = self.loot_move(obs, npcs, hp_frac, sc, sr)
@@ -343,6 +364,8 @@ class Bot:
                 self.last_attacker_t = t
             elif ty == "kill":
                 self.enemies.pop(e["target"], None)
+                if e["target"] < 100:
+                    self.kills += 1
             elif ty == "take_failed":
                 self.bad_take[e["id"]] = t
                 if e.get("reason") == "gone":
@@ -350,6 +373,12 @@ class Bot:
             elif ty == "took":
                 self.pickups.pop(e["id"], None)
         self.threats = [x for x in self.threats if t - x[0] < 6]
+        if P_FFA == "auto" and not self.ffa and obs.get("alive") is not None:
+            # drones and the odd stray shot kill a house bot now and then, so ask for several, early
+            others = (self.n_mechs - obs["alive"]) - self.kills
+            if (others >= P_FFA_DEATHS and t < 60) or (others >= P_FFA_DEATHS + 1 and t < 120):
+                self.ffa = True
+                log(f"FFA mode on at t={t:.1f}")
         # loot memory
         seen_p = set()
         for p in obs["pickups"]:
@@ -393,9 +422,12 @@ class Bot:
             d = m["_d"]
             if d > 260:
                 continue
-            if d > P_ENGAGE and t - self.hostile.get(m["id"], -99) > 12:
-                continue  # far away and not shooting at us: not our fight (yet)
             frac = (m.get("hp") or 1400) / max(1.0, m.get("max_hp") or 1400)
+            if self.ffa:
+                if t - self.hostile.get(m["id"], -99) > 8 and d > P_FFA_ENG and not (frac < P_FFA_WEAK and d < 100 and m["_los"]):
+                    continue  # FFA: let the others fight; only the ones on us, close, or nearly dead
+            elif d > P_ENGAGE and t - self.hostile.get(m["id"], -99) > 12:
+                continue  # far away and not shooting at us: not our fight (yet)
             s = d / 60.0 + frac * 2.0
             if not m["_los"]:
                 s += 2.5
@@ -416,7 +448,7 @@ class Bot:
 
     def pick_upgrade(self, offer):
         ids = [c["id"] for c in offer["choices"]]
-        for u in (UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
+        for u in (UPGRADE_FFA if self.ffa and P_FFA_UPG == "hp" else UPGRADE_OFFENSE if P_UPG == "off" else UPGRADE_HEAL if P_UPG == "heal" else UPGRADE_PRIORITY):
             if u in ids:
                 return ids.index(u)
         return 0
