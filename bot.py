@@ -11,14 +11,14 @@ from world import World
 
 TAU = 2 * math.pi
 import os as _os
-P_RET = float(_os.environ.get("P_RET", "0.2"))
-P_RET_OUT = float(_os.environ.get("P_RET_OUT", "0.8"))
+P_RET = float(_os.environ.get("P_RET", "0.1"))
+P_RET_OUT = float(_os.environ.get("P_RET_OUT", "0.7"))
 P_AVOID = _os.environ.get("P_AVOID", "0") == "1"
-P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0.5"))
+P_OUTNUM = float(_os.environ.get("P_OUTNUM", "0.3"))
 P_LASER_R = float(_os.environ.get("P_LASER_R", "150"))
 P_GUN_R = float(_os.environ.get("P_GUN_R", "55"))
 P_LIGHT = _os.environ.get("P_LIGHT", "1") == "1"
-P_MAXLOS = int(_os.environ.get("P_MAXLOS", "3"))  # this many hostiles with a clear shot forces a retreat
+P_MAXLOS = int(_os.environ.get("P_MAXLOS", "4"))  # this many hostiles with a clear shot forces a retreat
 P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
 
 # How much we like holding each weapon (mortar is a liability: enemy lasers cook it off).
