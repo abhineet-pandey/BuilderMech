@@ -20,6 +20,9 @@ P_GUN_R = float(_os.environ.get("P_GUN_R", "35"))
 P_LIGHT = _os.environ.get("P_LIGHT", "1") == "1"
 P_MAXLOS = int(_os.environ.get("P_MAXLOS", "99"))  # this many hostiles with a clear shot forces a retreat
 P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
+P_GASP = float(_os.environ.get("P_GASP", "0"))  # below this HP fraction, switch to the enemy we can finish fastest (convert a lost fight into a kill)
+P_GASP_W = float(_os.environ.get("P_GASP_W", "4"))  # how strongly last-gasp mode prefers low absolute HP
+P_TTK = float(_os.environ.get("P_TTK", "0"))  # weight on absolute enemy HP (time-to-kill) instead of HP fraction
 P_FINISH = _os.environ.get("P_FINISH", "1") == "1"  # stick with and close in on a badly hurt target
 P_CHAIN = _os.environ.get("P_CHAIN", "1") == "1"  # with lightning, prefer targets standing near other enemies
 P_AIMPRED = _os.environ.get("P_AIMPRED", "1") == "1"  # gun: fire if the aim will be on target after one tick of slew
@@ -552,7 +555,12 @@ class Bot:
                     continue  # FFA: let the others fight; only the ones on us, close, or nearly dead
             elif d > P_ENGAGE and t - self.hostile.get(m["id"], -99) > 12:
                 continue  # far away and not shooting at us: not our fight (yet)
-            s = d / 60.0 + frac * 2.0
+            if P_TTK:
+                s = d / 60.0 + (m.get("hp") or 1400) / 1400.0 * P_TTK
+            else:
+                s = d / 60.0 + frac * 2.0
+            if P_GASP and self._hpf < P_GASP and m["_los"] and d < 110:
+                s = (m.get("hp") or 1400) / 1400.0 * P_GASP_W + d / 120.0 - 20.0  # last gasp: lowest HP in sight
             if not m["_los"]:
                 s += 2.5
             if m["id"] == self.last_attacker and t - self.last_attacker_t < 3:
