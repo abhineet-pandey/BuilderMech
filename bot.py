@@ -22,6 +22,8 @@ P_MAXLOS = int(_os.environ.get("P_MAXLOS", "99"))  # this many hostiles with a c
 P_SEEK = _os.environ.get("P_SEEK", "0") == "1"  # with nothing in view, go after remembered enemies / gunfire
 P_GASP = float(_os.environ.get("P_GASP", "0"))  # below this HP fraction, switch to the enemy we can finish fastest (convert a lost fight into a kill)
 P_GASP_W = float(_os.environ.get("P_GASP_W", "4"))  # how strongly last-gasp mode prefers low absolute HP
+P_CENTER = _os.environ.get("P_CENTER", "0") == "1"  # final circle: ease onto the exact center instead of stopping within 1.5 m
+P_LIDLE = float(_os.environ.get("P_LIDLE", "0"))  # no target: let go of a charging laser if no hostile seen for this many s (0 = keep holding)
 P_TTK = float(_os.environ.get("P_TTK", "0"))  # weight on absolute enemy HP (time-to-kill) instead of HP fraction
 P_FINISH = _os.environ.get("P_FINISH", "1") == "1"  # stick with and close in on a badly hurt target
 P_CHAIN = _os.environ.get("P_CHAIN", "1") == "1"  # with lightning, prefer targets standing near other enemies
@@ -274,6 +276,7 @@ class Bot:
         hp_frac = me["hp"] / max(1.0, me["max_hp"])
         self._pos = pos
         self._hpf = hp_frac
+        self._t = t
         target = self.pick_target(enemies, t, weapons)
 
         # --- weapon management: take good pickups in reach
@@ -380,7 +383,17 @@ class Bot:
             else:
                 want = norm2(want[0] * 0.4 + vx, want[1] * 0.4 + vy)
                 self.mode += "+zone"
-        if sr < 8 and dsc < 1.5 and dz <= zr + 1.5:
+        if P_CENTER and sr < 8 and dz <= zr + 1.5 and dsc < 6.0:
+            # the circle closes onto its center: every 0.1 m off-center is time spent in 260 HP/s
+            if dsc < 0.15:
+                want = (0.0, 0.0)
+                self.mode += "+hold"
+            else:
+                k = min(1.0, dsc / 3.0)
+                want = ((sc[0] - pos[0]) / dsc * k, (sc[1] - pos[1]) / dsc * k)
+                self.mode += "+center"
+            boost = False
+        elif sr < 8 and dsc < 1.5 and dz <= zr + 1.5:
             # final circle and we're at its center: stand still, save energy, make no noise
             want, boost = (0.0, 0.0), False
             self.mode += "+hold"
@@ -1297,6 +1310,8 @@ class Bot:
     def laser_release_idle(self, weapons):
         # no target: if a laser is charging, just keep holding (it auto-fires at the hold limit)
         fire = [False, False]
+        if P_LIDLE and self._t - max(self.hostile.values(), default=-99) > P_LIDLE:
+            return fire  # nobody on us: let go now (wasted shot) rather than crawl at half speed
         for i, w in enumerate(weapons):
             if w and w["kind"] == "laser" and (w.get("charge", 0) or 0) > 0:
                 fire[i] = True
