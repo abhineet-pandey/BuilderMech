@@ -20,6 +20,7 @@ def quiet_sim(seed):
     sim.mechs[[m.id for m in sim.mechs if m is not sim.me][0]].alive = True  # keep one so the match runs
     other = next(m for m in sim.mechs if m.alive and m is not sim.me)
     other.pos = [sim.me.pos[0] + 400, sim.me.pos[1], sim.me.pos[2]]
+    other.hp = other.max_hp = 1e12  # parked outside the zone: must not die, or the match (and the test) ends early
     other.level = 'easy'
     sim.house_act = lambda m: {"move": [0, 0]}
     sim.npcs = []

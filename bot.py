@@ -383,19 +383,18 @@ class Bot:
             else:
                 want = norm2(want[0] * 0.4 + vx, want[1] * 0.4 + vy)
                 self.mode += "+zone"
-        if P_CENTER and sr < 8 and dz <= zr + 1.5 and dsc < 6.0:
-            # the circle closes onto its center: every 0.1 m off-center is time spent in 260 HP/s
-            if dz > zr - 0.3 and dsc > 1.0:
-                pass  # still outside (or on the edge of) the live circle: full-speed zone entry above wins
-            elif dsc < 0.15:
-                want = (0.0, 0.0)
+        if P_CENTER and sr < 8 and dsc < 6.0 and dz <= zr + 6.0:
+            # the circle closes onto its center: every 0.1 m off-center is time spent in 260 HP/s.
+            # Approach at the fastest speed we can still stop from (v^2 = 2*a*d), so we never overshoot.
+            if dsc < 0.1:
+                want, boost = (0.0, 0.0), False
                 self.mode += "+hold"
             else:
-                k = min(1.0, dsc / 3.0)
+                walk = (me.get("stats") or {}).get("walk_speed", 11.7)
+                k = min(1.0, 0.8 * math.sqrt(2 * 58.5 * dsc) / walk)
                 want = ((sc[0] - pos[0]) / dsc * k, (sc[1] - pos[1]) / dsc * k)
+                boost = boost and dsc > 3.0
                 self.mode += "+center"
-            if not (dz > zr - 0.3 and dsc > 1.0):
-                boost = False
         elif sr < 8 and dsc < 1.5 and dz <= zr + 1.5:
             # final circle and we're at its center: stand still, save energy, make no noise
             want, boost = (0.0, 0.0), False
