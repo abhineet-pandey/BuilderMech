@@ -385,14 +385,17 @@ class Bot:
                 self.mode += "+zone"
         if P_CENTER and sr < 8 and dz <= zr + 1.5 and dsc < 6.0:
             # the circle closes onto its center: every 0.1 m off-center is time spent in 260 HP/s
-            if dsc < 0.15:
+            if dz > zr - 0.3 and dsc > 1.0:
+                pass  # still outside (or on the edge of) the live circle: full-speed zone entry above wins
+            elif dsc < 0.15:
                 want = (0.0, 0.0)
                 self.mode += "+hold"
             else:
                 k = min(1.0, dsc / 3.0)
                 want = ((sc[0] - pos[0]) / dsc * k, (sc[1] - pos[1]) / dsc * k)
                 self.mode += "+center"
-            boost = False
+            if not (dz > zr - 0.3 and dsc > 1.0):
+                boost = False
         elif sr < 8 and dsc < 1.5 and dz <= zr + 1.5:
             # final circle and we're at its center: stand still, save energy, make no noise
             want, boost = (0.0, 0.0), False
